@@ -126,8 +126,10 @@ def extract_key_val_from_sheet(df):
 
 DATA_COLUMNS = [
     "Năm", "Tháng", "Kỳ", "Shop", "Sàn", "Thương hiệu",
+    "Tổng Doanh Thu Gốc", "Tổng Phí Sàn Đã Trừ", "Doanh Số Thực Nhận Về Ví",
     "Doanh số thực", "Tổng doanh thu gộp", "Phí sàn", "Chi tiết phí",
-    "Chi phí Ads gốc", "Thuế Ads (10%)", "Chi phí Ads", "Giá vốn", "Lợi nhuận",
+    "Chi phí Ads gốc", "Thuế Ads (10%)", "Chi phí Ads", "Giá vốn",
+    "Lợi Nhuận Gộp Sau Marketing (MAM)", "Lợi nhuận",
     "Tổng Doanh Thu Kiện Hàng", "Chi Phí Marketing KOC", "Chi Phí Gửi Hàng Bù"
 ]
 HISTORY_FILE = "lich_su_doanh_so.csv"
@@ -149,6 +151,12 @@ def normalize_history(history):
     rows = []
     for _, source_row in history.iterrows():
         row = {column: source_row.get(column, 0) for column in DATA_COLUMNS}
+        row["Tổng Doanh Thu Gốc"] = source_row.get("Tổng Doanh Thu Gốc", source_row.get("Tổng doanh thu gộp", 0))
+        row["Tổng Phí Sàn Đã Trừ"] = source_row.get("Tổng Phí Sàn Đã Trừ", source_row.get("Phí sàn", 0))
+        row["Doanh Số Thực Nhận Về Ví"] = source_row.get("Doanh Số Thực Nhận Về Ví", source_row.get("Doanh số thực", 0))
+        row["Lợi Nhuận Gộp Sau Marketing (MAM)"] = source_row.get(
+            "Lợi Nhuận Gộp Sau Marketing (MAM)", source_row.get("Lợi nhuận", 0)
+        )
         fee_detail = row["Chi tiết phí"]
         if isinstance(fee_detail, str):
             try:
@@ -157,10 +165,12 @@ def normalize_history(history):
                 fee_detail = {}
         row["Chi tiết phí"] = fee_detail if isinstance(fee_detail, dict) else {}
         for column in [
-            "Năm", "Tháng", "Doanh số thực", "Tổng doanh thu gộp", "Phí sàn",
+            "Năm", "Tháng", "Tổng Doanh Thu Gốc", "Tổng Phí Sàn Đã Trừ", "Doanh Số Thực Nhận Về Ví",
+            "Doanh số thực", "Tổng doanh thu gộp", "Phí sàn",
             "Chi phí Ads gốc", "Thuế Ads (10%)", "Chi phí Ads", "Giá vốn", "Lợi nhuận"
         ]:
             row[column] = clean_num(row[column])
+        row["Lợi Nhuận Gộp Sau Marketing (MAM)"] = clean_num(row["Lợi Nhuận Gộp Sau Marketing (MAM)"])
         for column in [
             "Tổng Doanh Thu Kiện Hàng", "Chi Phí Marketing KOC", "Chi Phí Gửi Hàng Bù"
         ]:
@@ -172,6 +182,16 @@ def rows_for_csv(rows):
     serialized = []
     for row in rows:
         output = {column: row.get(column, 0) for column in DATA_COLUMNS}
+        gross_revenue = row.get("Tổng Doanh Thu Gốc", row.get("Tổng doanh thu gộp", 0))
+        platform_fees = row.get("Tổng Phí Sàn Đã Trừ", row.get("Phí sàn", 0))
+        wallet_revenue = row.get("Doanh Số Thực Nhận Về Ví", row.get("Doanh số thực", 0))
+        mam = row.get("Lợi Nhuận Gộp Sau Marketing (MAM)", row.get("Lợi nhuận", 0))
+        output.update({
+            "Tổng Doanh Thu Gốc": gross_revenue,
+            "Tổng Phí Sàn Đã Trừ": platform_fees,
+            "Doanh Số Thực Nhận Về Ví": wallet_revenue,
+            "Lợi Nhuận Gộp Sau Marketing (MAM)": mam,
+        })
         output["Chi tiết phí"] = json.dumps(output["Chi tiết phí"], ensure_ascii=False)
         serialized.append(output)
     return pd.DataFrame(serialized, columns=DATA_COLUMNS)
@@ -181,12 +201,14 @@ def load_history():
         history = pd.read_csv(HISTORY_FILE)
     except FileNotFoundError:
         initial_rows = sample_history_rows()
-        rows_for_csv(initial_rows).to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
-        return initial_rows
+        initial_frame = rows_for_csv(initial_rows)
+        initial_frame.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+        return normalize_history(initial_frame)
     except pd.errors.EmptyDataError:
         initial_rows = sample_history_rows()
-        rows_for_csv(initial_rows).to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
-        return initial_rows
+        initial_frame = rows_for_csv(initial_rows)
+        initial_frame.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+        return normalize_history(initial_frame)
     except Exception as error:
         st.warning(f"Không đọc được file lịch sử: {error}")
         return []
@@ -355,7 +377,12 @@ if uploaded_files:
                 }
 
             cogs = net_payout * cogs_rate
-            profit = net_payout - ads_info["total"] - external_metrics["Chi Phí Gửi Hàng Bù"] - cogs
+            marketing_cost = (
+                ads_info["total"]
+                + external_metrics["Chi Phí Marketing KOC"]
+                + external_metrics["Chi Phí Gửi Hàng Bù"]
+            )
+            profit = net_payout - marketing_cost - cogs
 
             current_data.append({
                 "Năm": meta["year"],
@@ -364,6 +391,9 @@ if uploaded_files:
                 "Shop": shop_id,
                 "Sàn": platform,
                 "Thương hiệu": brand,
+                "Tổng Doanh Thu Gốc": gross_sales,
+                "Tổng Phí Sàn Đã Trừ": total_fees,
+                "Doanh Số Thực Nhận Về Ví": net_payout,
                 "Doanh số thực": net_payout,
                 "Tổng doanh thu gộp": gross_sales,
                 "Phí sàn": total_fees,
@@ -372,6 +402,7 @@ if uploaded_files:
                 "Thuế Ads (10%)": ads_info["tax"],
                 "Chi phí Ads": ads_info["total"],
                 "Giá vốn": cogs,
+                "Lợi Nhuận Gộp Sau Marketing (MAM)": profit,
                 "Lợi nhuận": profit,
                 **external_metrics
             })
@@ -400,16 +431,19 @@ df_now = pd.DataFrame(display_data, columns=DATA_COLUMNS)
 # ==================== 5. GIAO DIỆN HIỂN THỊ CHỈ SỐ KPI ====================
 st.title("📊 Báo Cáo Phân Tích Hiệu Quả & Dòng Tiền Đa Sàn")
 
-total_sales = df_now["Doanh số thực"].sum()
-total_fees = df_now["Phí sàn"].sum()
+total_gross_revenue = df_now["Tổng Doanh Thu Gốc"].sum()
+total_sales = df_now["Doanh Số Thực Nhận Về Ví"].sum()
+total_fees = df_now["Tổng Phí Sàn Đã Trừ"].sum()
 total_ads = df_now["Chi phí Ads"].sum()
-total_profit = df_now["Lợi nhuận"].sum()
+total_profit = df_now["Lợi Nhuận Gộp Sau Marketing (MAM)"].sum()
+sales_rate = total_sales / total_gross_revenue * 100 if total_gross_revenue > 0 else 0.0
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Tổng Thực Thu Về Ví", f"{total_sales:,.0f} đ")
-c2.metric("Tổng Phí Sàn", f"{total_fees:,.0f} đ", delta=f"{(total_fees/total_sales*100):.1f}% DT", delta_color="inverse")
-c3.metric("Tổng Ads (Đã gồm 10% thuế)", f"{total_ads:,.0f} đ", delta=f"{(total_ads/total_sales*100):.1f}% DT", delta_color="inverse")
-c4.metric("Lợi Nhuận Đóng Góp", f"{total_profit:,.0f} đ", delta=f"Biên lãi: {(total_profit/total_sales*100):.1f}%")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Tổng Doanh Thu Gốc", f"{total_gross_revenue:,.0f} đ")
+c2.metric("Thực Thu Về Ví", f"{total_sales:,.0f} đ", delta=f"{sales_rate:.1f}% doanh thu gốc")
+c3.metric("Tổng Phí Sàn Đã Trừ", f"{total_fees:,.0f} đ", delta=f"{(total_fees/total_gross_revenue*100 if total_gross_revenue > 0 else 0):.1f}% DT gốc", delta_color="inverse")
+c4.metric("Tổng Ads", f"{total_ads:,.0f} đ", delta=f"{(total_ads/total_sales*100 if total_sales > 0 else 0):.1f}% thực thu", delta_color="inverse")
+c5.metric("MAM", f"{total_profit:,.0f} đ", delta=f"Biên MAM: {(total_profit/total_gross_revenue*100 if total_gross_revenue > 0 else 0):.1f}%")
 
 st.markdown("#### Đối chiếu chi phí Ads nạp thẻ")
 ads_kpi_1, ads_kpi_2, ads_kpi_3 = st.columns(3)
@@ -419,12 +453,12 @@ ads_kpi_3.metric("Tổng chi phí Ads thực tế", f"{total_ads:,.0f} đ")
 
 # Cảnh báo báo động đỏ
 for _, r in df_now.iterrows():
-    ads_pct = (r["Chi phí Ads"] / r["Doanh số thực"] * 100) if r["Doanh số thực"] > 0 else 0
-    fees_pct = (r["Phí sàn"] / r["Doanh số thực"] * 100) if r["Doanh số thực"] > 0 else 0
+    ads_pct = (r["Chi phí Ads"] / r["Tổng Doanh Thu Gốc"] * 100) if r["Tổng Doanh Thu Gốc"] > 0 else 0
+    fees_pct = (r["Tổng Phí Sàn Đã Trừ"] / r["Tổng Doanh Thu Gốc"] * 100) if r["Tổng Doanh Thu Gốc"] > 0 else 0
     if ads_pct > 20:
-        st.error(f"🚨 **BÁO ĐỘNG ĐỎ:** `{r['Shop']}` có tỷ lệ Ads chiếm tới **{ads_pct:.1f}%** doanh số thực (vượt ngưỡng 20%)!")
+        st.error(f"🚨 **BÁO ĐỘNG ĐỎ:** `{r['Shop']}` có tỷ lệ Ads chiếm tới **{ads_pct:.1f}%** doanh thu gốc (vượt ngưỡng 20%)!")
     if fees_pct > 22:
-        st.warning(f"⚠️ **CẢNH BÁO:** `{r['Shop']}` có phí sàn chiếm **{fees_pct:.1f}%** doanh số thực!")
+        st.warning(f"⚠️ **CẢNH BÁO:** `{r['Shop']}` có phí sàn chiếm **{fees_pct:.1f}%** doanh thu gốc!")
 
 st.markdown("---")
 
@@ -435,17 +469,17 @@ with tab_summary:
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         fig_bar = px.bar(
-            df_now, x="Shop", y=["Doanh số thực", "Phí sàn", "Chi phí Ads", "Lợi nhuận"],
-            barmode="group", title="So Sánh Doanh Số vs Chi Phí vs Lãi Ròng", text_auto=".2s"
+            df_now, x="Shop", y=["Tổng Doanh Thu Gốc", "Doanh Số Thực Nhận Về Ví", "Chi phí Ads", "Lợi Nhuận Gộp Sau Marketing (MAM)"],
+            barmode="group", title="Doanh Thu Gốc, Thực Thu và MAM", text_auto=".2s"
         )
         st.plotly_chart(fig_bar, use_container_width=True)
     with col_chart2:
-        df_now["% Phí Sàn"] = (df_now["Phí sàn"] / df_now["Doanh số thực"] * 100).round(1)
-        df_now["% Chi Phí Ads"] = (df_now["Chi phí Ads"] / df_now["Doanh số thực"] * 100).round(1)
-        df_now["% Lãi Ròng"] = (df_now["Lợi nhuận"] / df_now["Doanh số thực"] * 100).round(1)
+        df_now["% Phí Sàn"] = (df_now["Tổng Phí Sàn Đã Trừ"] / df_now["Tổng Doanh Thu Gốc"].replace(0, pd.NA) * 100).fillna(0).round(1)
+        df_now["% Chi Phí Ads"] = (df_now["Chi phí Ads"] / df_now["Tổng Doanh Thu Gốc"].replace(0, pd.NA) * 100).fillna(0).round(1)
+        df_now["% MAM"] = (df_now["Lợi Nhuận Gộp Sau Marketing (MAM)"] / df_now["Tổng Doanh Thu Gốc"].replace(0, pd.NA) * 100).fillna(0).round(1)
         fig_rate = px.bar(
-            df_now, x="Shop", y=["% Phí Sàn", "% Chi Phí Ads", "% Lãi Ròng"],
-            barmode="group", title="Tỷ Trọng Chi Phí & Biên Lãi (%)", text_auto=True
+            df_now, x="Shop", y=["% Phí Sàn", "% Chi Phí Ads", "% MAM"],
+            barmode="group", title="Tỷ Trọng Chi Phí và Biên MAM (%)", text_auto=True
         )
         st.plotly_chart(fig_rate, use_container_width=True)
 
@@ -455,54 +489,67 @@ with tab_detail:
     for idx, r in df_now.iterrows():
         with subtabs[idx]:
             st.subheader(f"📌 {r['Shop']} | {r['Kỳ']}")
-            revenue = float(r["Doanh số thực"])
+            gross_revenue = float(r["Tổng Doanh Thu Gốc"])
+            wallet_revenue = float(r["Doanh Số Thực Nhận Về Ví"])
+            marketing_cost = float(r["Chi phí Ads"]) + float(r["Chi Phí Marketing KOC"]) + float(r["Chi Phí Gửi Hàng Bù"])
 
-            def pnl_row(label, amount, section=False):
+            def pnl_row(label, amount):
                 amount = float(amount)
-                ratio = amount / revenue * 100 if revenue > 0 else 0.0
+                ratio = amount / gross_revenue * 100 if gross_revenue > 0 else 0.0
                 return {
                     "Khoản Mục": label,
                     "Số Tiền (đ)": f"{amount:,.0f} đ",
-                    "Tỷ Trọng (% / Doanh Số Thực)": f"{ratio:.1f}%"
+                    "Tỷ Trọng (% / Doanh Thu Gốc)": f"{ratio:.1f}%"
                 }
 
             pnl_rows = [
-                {"Khoản Mục": "I. DOANH SỐ", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
-                pnl_row("Doanh Số Thực Nhận", revenue),
-                {"Khoản Mục": "II. CHI PHÍ NỀN TẢNG / VẬN CHUYỂN", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+                {"Khoản Mục": "I. DOANH THU", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
+                pnl_row("1. Tổng Doanh Thu Gốc (GMV sàn ghi nhận)", gross_revenue),
+                pnl_row("2. Tổng Chi Phí Nền Tảng Đã Trừ", r["Tổng Phí Sàn Đã Trừ"]),
             ]
 
             if r["Sàn"] == "Ngoại sàn":
                 platform_rows = [
-                    ("Phí Vận Chuyển 3PL", r["Phí sàn"]),
-                    ("Chi Phí Marketing KOC", r["Chi Phí Marketing KOC"]),
-                    ("Chi Phí Gửi Hàng Bù", r["Chi Phí Gửi Hàng Bù"]),
+                    ("Phí Vận Chuyển 3PL", r["Tổng Phí Sàn Đã Trừ"]),
                 ]
             else:
                 platform_rows = list(r["Chi tiết phí"].items())
 
             pnl_rows.extend(pnl_row(label, amount) for label, amount in platform_rows)
             platform_total = sum(float(amount) for _, amount in platform_rows)
-            pnl_rows.append(pnl_row("TỔNG CHI PHÍ NỀN TẢNG & VẬN CHUYỂN", platform_total))
             pnl_rows.extend([
-                {"Khoản Mục": "III. CHI PHÍ MARKETING / QUẢNG CÁO", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+                pnl_row("TỔNG CHI PHÍ NỀN TẢNG ĐÃ TRỪ", platform_total),
+                pnl_row("3. DOANH SỐ THỰC NHẬN VỀ VÍ", wallet_revenue),
+                {"Khoản Mục": "II. CHI PHÍ MARKETING & QUẢNG CÁO", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
                 pnl_row("Tiền Ads gốc", r["Chi phí Ads gốc"]),
                 pnl_row("Thuế Ads 10%", r["Thuế Ads (10%)"]),
-                pnl_row("TỔNG CHI PHÍ MARKETING", r["Chi phí Ads"]),
-                {"Khoản Mục": "IV. GIÁ VỐN & VẬN HÀNH", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+            ])
+            if r["Sàn"] == "Ngoại sàn":
+                pnl_rows.extend([
+                    pnl_row("Chi phí gửi mẫu KOC", r["Chi Phí Marketing KOC"]),
+                    pnl_row("Chi phí gửi bù hàng lỗi", r["Chi Phí Gửi Hàng Bù"]),
+                ])
+            pnl_rows.extend([
+                pnl_row("TỔNG CHI PHÍ MARKETING", marketing_cost),
+                {"Khoản Mục": "III. GIÁ VỐN HÀNG BÁN (COGS)", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
                 pnl_row(f"Giá vốn hàng bán ({cogs_rate * 100:.0f}%)", r["Giá vốn"]),
-                {"Khoản Mục": "V. KẾT QUẢ KINH DOANH", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
-                pnl_row("LỢI NHUẬN RÒNG ĐÓNG GÓP", r["Lợi nhuận"]),
+                {"Khoản Mục": "IV. KẾT QUẢ KINH DOANH", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
+                pnl_row("LỢI NHUẬN GỘP SAU MARKETING (MAM)", r["Lợi Nhuận Gộp Sau Marketing (MAM)"]),
+                {
+                    "Khoản Mục": "TỶ SUẤT LỢI NHUẬN (% MAM / DOANH THU GỐC)",
+                    "Số Tiền (đ)": "",
+                    "Tỷ Trọng (% / Doanh Thu Gốc)": f"{(r['Lợi Nhuận Gộp Sau Marketing (MAM)'] / gross_revenue * 100 if gross_revenue > 0 else 0):.1f}%"
+                },
             ])
 
             pnl_df = pd.DataFrame(pnl_rows)
             table_col, chart_col = st.columns([1.15, 1])
             with table_col:
                 def highlight_profit(row):
-                    if row["Khoản Mục"] == "LỢI NHUẬN RÒNG ĐÓNG GÓP":
-                        color = "#d1fae5" if r["Lợi nhuận"] >= 0 else "#fee2e2"
+                    if row["Khoản Mục"] == "LỢI NHUẬN GỘP SAU MARKETING (MAM)":
+                        color = "#d1fae5" if r["Lợi Nhuận Gộp Sau Marketing (MAM)"] >= 0 else "#fee2e2"
                         return [f"background-color: {color}; font-weight: 700"] * len(row)
-                    if row["Khoản Mục"].startswith(("I. ", "II. ", "III. ", "IV. ", "V. ")):
+                    if row["Khoản Mục"].startswith(("I. ", "II. ", "III. ", "IV. ")):
                         return ["background-color: #e2e8f0; font-weight: 700"] * len(row)
                     if row["Khoản Mục"].startswith("TỔNG "):
                         return ["font-weight: 700; border-top: 1px solid #94a3b8"] * len(row)
@@ -513,23 +560,26 @@ with tab_detail:
                     use_container_width=True,
                     hide_index=True,
                 )
+                st.caption("(Chưa bao gồm chi phí cố định: Mặt bằng, Lương nhân sự, Điện nước, Khấu hao & Vận hành chung)")
             with chart_col:
-                if r["Sàn"] == "Ngoại sàn":
-                    waterfall_labels = ["Doanh Số Thực", "Chi Phí Marketing KOC", "Chi Phí Gửi Hàng Bù", "Giá Vốn", "LỢI NHUẬN"]
-                    waterfall_values = [revenue, -r["Chi Phí Marketing KOC"], -r["Chi Phí Gửi Hàng Bù"], -r["Giá vốn"], 0]
-                else:
-                    waterfall_labels = ["Doanh Số Thực", "Phí Sàn", "Chi Phí Ads", "Giá Vốn", "LỢI NHUẬN"]
-                    waterfall_values = [revenue, -r["Phí sàn"], -r["Chi phí Ads"], -r["Giá vốn"], 0]
+                waterfall_labels = [
+                    "Doanh Thu Gốc", "Phí Sàn / 3PL", "Thực Nhận Về Ví",
+                    "Ads / KOC / Gửi Bù", "Giá Vốn", "MAM"
+                ]
+                waterfall_values = [
+                    gross_revenue, -r["Tổng Phí Sàn Đã Trừ"], 0,
+                    -marketing_cost, -r["Giá vốn"], 0
+                ]
 
                 fig_wf = go.Figure(go.Waterfall(
                     name="P&L",
                     orientation="v",
-                    measure=["relative", "relative", "relative", "relative", "total"],
+                    measure=["relative", "relative", "total", "relative", "relative", "total"],
                     x=waterfall_labels,
                     y=waterfall_values,
                     connector={"line": {"color": "rgb(63, 63, 63)"}},
                 ))
-                fig_wf.update_layout(title=f"Dòng Chảy Lợi Nhuận - {r['Shop']}", showlegend=False)
+                fig_wf.update_layout(title=f"Dòng Chảy MAM - {r['Shop']}", showlegend=False)
                 st.plotly_chart(fig_wf, use_container_width=True)
 
 st.markdown("---")
