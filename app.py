@@ -175,6 +175,14 @@ def normalize_history(history):
             "Tổng Doanh Thu Kiện Hàng", "Chi Phí Marketing KOC", "Chi Phí Gửi Hàng Bù"
         ]:
             row[column] = clean_num(row[column])
+        row["Lợi Nhuận Gộp Sau Marketing (MAM)"] = (
+            row["Doanh Số Thực Nhận Về Ví"]
+            - row["Chi phí Ads"]
+            - row["Chi Phí Marketing KOC"]
+            - row["Chi Phí Gửi Hàng Bù"]
+            - row["Giá vốn"]
+        )
+        row["Lợi nhuận"] = row["Lợi Nhuận Gộp Sau Marketing (MAM)"]
         rows.append(row)
     return rows
 
@@ -505,7 +513,8 @@ with tab_detail:
             pnl_rows = [
                 {"Khoản Mục": "I. DOANH THU", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
                 pnl_row("1. Tổng Doanh Thu Gốc (GMV sàn ghi nhận)", gross_revenue),
-                pnl_row("2. Tổng Chi Phí Nền Tảng Đã Trừ", r["Tổng Phí Sàn Đã Trừ"]),
+                pnl_row("2. Doanh Thu Thực Nhận Về Ví", wallet_revenue),
+                {"Khoản Mục": "II. CHI PHÍ NỀN TẢNG & SÀN", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
             ]
 
             if r["Sàn"] == "Ngoại sàn":
@@ -516,11 +525,10 @@ with tab_detail:
                 platform_rows = list(r["Chi tiết phí"].items())
 
             pnl_rows.extend(pnl_row(label, amount) for label, amount in platform_rows)
-            platform_total = sum(float(amount) for _, amount in platform_rows)
+            platform_total = float(r["Tổng Phí Sàn Đã Trừ"])
             pnl_rows.extend([
                 pnl_row("TỔNG CHI PHÍ NỀN TẢNG ĐÃ TRỪ", platform_total),
-                pnl_row("3. DOANH SỐ THỰC NHẬN VỀ VÍ", wallet_revenue),
-                {"Khoản Mục": "II. CHI PHÍ MARKETING & QUẢNG CÁO", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
+                {"Khoản Mục": "III. CHI PHÍ MARKETING & QUẢNG CÁO", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
                 pnl_row("Tiền Ads gốc", r["Chi phí Ads gốc"]),
                 pnl_row("Thuế Ads 10%", r["Thuế Ads (10%)"]),
             ])
@@ -531,9 +539,9 @@ with tab_detail:
                 ])
             pnl_rows.extend([
                 pnl_row("TỔNG CHI PHÍ MARKETING", marketing_cost),
-                {"Khoản Mục": "III. GIÁ VỐN HÀNG BÁN (COGS)", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
+                {"Khoản Mục": "IV. GIÁ VỐN HÀNG BÁN (COGS)", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
                 pnl_row(f"Giá vốn hàng bán ({cogs_rate * 100:.0f}%)", r["Giá vốn"]),
-                {"Khoản Mục": "IV. KẾT QUẢ KINH DOANH", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
+                {"Khoản Mục": "V. HIỆU QUẢ KINH DOANH", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Thu Gốc)": ""},
                 pnl_row("LỢI NHUẬN GỘP SAU MARKETING (MAM)", r["Lợi Nhuận Gộp Sau Marketing (MAM)"]),
                 {
                     "Khoản Mục": "TỶ SUẤT LỢI NHUẬN (% MAM / DOANH THU GỐC)",
@@ -549,7 +557,7 @@ with tab_detail:
                     if row["Khoản Mục"] == "LỢI NHUẬN GỘP SAU MARKETING (MAM)":
                         color = "#d1fae5" if r["Lợi Nhuận Gộp Sau Marketing (MAM)"] >= 0 else "#fee2e2"
                         return [f"background-color: {color}; font-weight: 700"] * len(row)
-                    if row["Khoản Mục"].startswith(("I. ", "II. ", "III. ", "IV. ")):
+                    if row["Khoản Mục"].startswith(("I. ", "II. ", "III. ", "IV. ", "V. ")):
                         return ["background-color: #e2e8f0; font-weight: 700"] * len(row)
                     if row["Khoản Mục"].startswith("TỔNG "):
                         return ["font-weight: 700; border-top: 1px solid #94a3b8"] * len(row)
