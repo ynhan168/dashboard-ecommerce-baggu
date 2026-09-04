@@ -127,7 +127,8 @@ def extract_key_val_from_sheet(df):
 DATA_COLUMNS = [
     "Năm", "Tháng", "Kỳ", "Shop", "Sàn", "Thương hiệu",
     "Doanh số thực", "Tổng doanh thu gộp", "Phí sàn", "Chi tiết phí",
-    "Chi phí Ads gốc", "Thuế Ads (10%)", "Chi phí Ads", "Giá vốn", "Lợi nhuận"
+    "Chi phí Ads gốc", "Thuế Ads (10%)", "Chi phí Ads", "Giá vốn", "Lợi nhuận",
+    "Tổng Doanh Thu Kiện Hàng", "Chi Phí Marketing KOC", "Chi Phí Gửi Hàng Bù"
 ]
 HISTORY_FILE = "lich_su_doanh_so.csv"
 
@@ -158,6 +159,10 @@ def normalize_history(history):
         for column in [
             "Năm", "Tháng", "Doanh số thực", "Tổng doanh thu gộp", "Phí sàn",
             "Chi phí Ads gốc", "Thuế Ads (10%)", "Chi phí Ads", "Giá vốn", "Lợi nhuận"
+        ]:
+            row[column] = clean_num(row[column])
+        for column in [
+            "Tổng Doanh Thu Kiện Hàng", "Chi Phí Marketing KOC", "Chi Phí Gửi Hàng Bù"
         ]:
             row[column] = clean_num(row[column])
         rows.append(row)
@@ -254,6 +259,11 @@ if uploaded_files:
 
         # Lấy Ads tương ứng với đúng Thương hiệu và Kỳ này (Shopee/Ngoại sàn mặc định = 0)
         ads_info = ads_lookup.get((brand, period), {"raw": 0.0, "tax": 0.0, "total": 0.0}) if platform == "TikTok Shop" else {"raw": 0.0, "tax": 0.0, "total": 0.0}
+        external_metrics = {
+            "Tổng Doanh Thu Kiện Hàng": 0.0,
+            "Chi Phí Marketing KOC": 0.0,
+            "Chi Phí Gửi Hàng Bù": 0.0
+        }
 
         try:
             # 1. Xử lý TikTok Shop (Đọc sheet 'Báo cáo')
@@ -298,30 +308,56 @@ if uploaded_files:
 
             # 3. Xử lý Ngoại sàn (Đơn COD & KOC)
             elif platform == "Ngoại sàn":
-                df_ngoai = pd.read_csv(f) if f.name.endswith(".csv") else pd.read_excel(f)
-                col_cod = next((c for c in df_ngoai.columns if "số tiền cod" in c.lower()), None)
-                col_ship = next((c for c in df_ngoai.columns if "phí vận chuyển thực tế" in c.lower()), None)
-                col_value = next((c for c in df_ngoai.columns if "giá trị" in c.lower()), None)
-                
-                df_ngoai['clean_cod'] = df_ngoai[col_cod].apply(clean_num) if col_cod else 0.0
-                df_ngoai['clean_ship'] = df_ngoai[col_ship].apply(clean_num) if col_ship else 0.0
-                df_ngoai['clean_value'] = df_ngoai[col_value].apply(clean_num) if col_value else 0.0
-
-                is_koc = (
-                    (df_ngoai['clean_cod'] == 0) & (df_ngoai['clean_value'] == 0)
-                    if col_value else pd.Series(False, index=df_ngoai.index)
+                df_ngoai = (
+                    pd.read_csv(f, header=2)
+                    if f.name.lower().endswith(".csv")
+                    else pd.read_excel(f, header=2)
                 )
-                gross_sales = df_ngoai[~is_koc]['clean_cod'].sum()
-                total_ship = df_ngoai[~is_koc]['clean_ship'].sum()
-                koc_ship = df_ngoai[is_koc]['clean_ship'].sum()
+                required_columns = [
+                    "Item List", "Tracking Status", "Parcel Value", "COD Amount",
+                    "Actual Shipping Fee", "Estimated Shipping Fee"
+                ]
+                missing_columns = [column for column in required_columns if column not in df_ngoai.columns]
+                if missing_columns:
+                    raise ValueError(
+                        "Thiếu cột trong báo cáo 3PL: " + ", ".join(missing_columns)
+                    )
 
-                net_payout = gross_sales - total_ship
-                total_fees = total_ship
-                fee_detail = {"Phí vận chuyển 3PL": total_ship, "Chi phí ship KOC": koc_ship}
+                status_text = df_ngoai["Tracking Status"].fillna("").astype(str).str.lower()
+                delivered = status_text.str.contains("đã giao|delivered", regex=True, na=False)
+                df_ngoai = df_ngoai.loc[delivered].copy()
+
+                item_text = df_ngoai["Item List"].fillna("").astype(str).str.lower()
+                is_koc = item_text.str.contains("koc", regex=False, na=False)
+                is_replacement = item_text.str.contains("bù", regex=False, na=False)
+                is_customer = ~is_koc & ~is_replacement
+
+                df_ngoai["parcel_value"] = df_ngoai["Parcel Value"].apply(clean_num)
+                actual_ship = df_ngoai["Actual Shipping Fee"].apply(clean_num)
+                estimated_ship = df_ngoai["Estimated Shipping Fee"].apply(clean_num)
+                df_ngoai["shipping_fee"] = actual_ship.where(actual_ship != 0, estimated_ship)
+
+                gross_sales = df_ngoai.loc[is_customer, "parcel_value"].sum()
+                customer_shipping = df_ngoai.loc[is_customer, "shipping_fee"].sum()
+                koc_ship = df_ngoai.loc[is_koc, "shipping_fee"].sum()
+                replacement_ship = df_ngoai.loc[is_replacement, "shipping_fee"].sum()
+
+                net_payout = gross_sales - customer_shipping
+                total_fees = customer_shipping
+                fee_detail = {
+                    "Phí vận chuyển bán hàng": customer_shipping,
+                    "Chi phí Marketing KOC": koc_ship,
+                    "Chi phí Gửi hàng bù": replacement_ship
+                }
                 ads_info = {"raw": koc_ship, "tax": 0.0, "total": koc_ship}
+                external_metrics = {
+                    "Tổng Doanh Thu Kiện Hàng": gross_sales,
+                    "Chi Phí Marketing KOC": koc_ship,
+                    "Chi Phí Gửi Hàng Bù": replacement_ship
+                }
 
             cogs = net_payout * cogs_rate
-            profit = net_payout - ads_info["total"] - cogs
+            profit = net_payout - ads_info["total"] - external_metrics["Chi Phí Gửi Hàng Bù"] - cogs
 
             current_data.append({
                 "Năm": meta["year"],
@@ -338,7 +374,8 @@ if uploaded_files:
                 "Thuế Ads (10%)": ads_info["tax"],
                 "Chi phí Ads": ads_info["total"],
                 "Giá vốn": cogs,
-                "Lợi nhuận": profit
+                "Lợi nhuận": profit,
+                **external_metrics
             })
         except Exception as e:
             st.error(f"Lỗi đọc file {f.name}: {e}")
@@ -428,6 +465,20 @@ with tab_detail:
                 st.write(f"- Tiền Ads gốc: **{r['Chi phí Ads gốc']:,.0f} đ**")
                 st.write(f"- Thuế nạp Ads (10%): **{r['Thuế Ads (10%)']:,.0f} đ**")
                 st.write(f"- Giá vốn ({cogs_rate*100:.0f}%): **{r['Giá vốn']:,.0f} đ**")
+                if r["Sàn"] == "Ngoại sàn":
+                    external_card_1, external_card_2, external_card_3 = st.columns(3)
+                    external_card_1.metric(
+                        "Tổng Doanh Thu Kiện Hàng",
+                        f"{r['Tổng Doanh Thu Kiện Hàng']:,.0f} đ"
+                    )
+                    external_card_2.metric(
+                        "Chi Phí Marketing KOC",
+                        f"{r['Chi Phí Marketing KOC']:,.0f} đ"
+                    )
+                    external_card_3.metric(
+                        "Chi Phí Gửi Hàng Bù",
+                        f"{r['Chi Phí Gửi Hàng Bù']:,.0f} đ"
+                    )
                 st.write("---")
                 if r["Lợi nhuận"] >= 0:
                     st.success(f"Lãi ròng đóng góp: {r['Lợi nhuận']:,.0f} đ")
@@ -454,11 +505,29 @@ with tab_detail:
             with cR:
                 chart_cols = st.columns(2) if r["Sàn"] in ["TikTok Shop", "Shopee"] else [st.container()]
                 with chart_cols[0]:
+                    if r["Sàn"] == "Ngoại sàn":
+                        waterfall_measure = ["relative", "relative", "relative", "relative", "total"]
+                        waterfall_labels = [
+                            "Doanh Số Thực", "Chi Phí Marketing KOC",
+                            "Chi Phí Gửi Hàng Bù", "Giá Vốn", "LỢI NHUẬN"
+                        ]
+                        waterfall_values = [
+                            r["Doanh số thực"],
+                            -r["Chi Phí Marketing KOC"],
+                            -r["Chi Phí Gửi Hàng Bù"],
+                            -r["Giá vốn"],
+                            0
+                        ]
+                    else:
+                        waterfall_measure = ["relative", "relative", "relative", "relative", "total"]
+                        waterfall_labels = ["Doanh Số Thực", "Phí Sàn", "Chi Phí Ads", "Giá Vốn", "LỢI NHUẬN"]
+                        waterfall_values = [r["Doanh số thực"], -r["Phí sàn"], -r["Chi phí Ads"], -r["Giá vốn"], 0]
+
                     fig_wf = go.Figure(go.Waterfall(
                         name="P&L", orientation="v",
-                        measure=["relative", "relative", "relative", "relative", "total"],
-                        x=["Doanh Số Thực", "Phí Sàn", "Chi Phí Ads", "Giá Vốn", "LỢI NHUẬN"],
-                        y=[r["Doanh số thực"], -r["Phí sàn"], -r["Chi phí Ads"], -r["Giá vốn"], 0],
+                        measure=waterfall_measure,
+                        x=waterfall_labels,
+                        y=waterfall_values,
                         connector={"line": {"color": "rgb(63, 63, 63)"}},
                     ))
                     fig_wf.update_layout(title=f"Dòng Chảy Lợi Nhuận - {r['Shop']}", showlegend=False)
