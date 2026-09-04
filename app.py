@@ -333,9 +333,7 @@ if uploaded_files:
                 is_customer = ~is_koc & ~is_replacement
 
                 df_ngoai["parcel_value"] = df_ngoai["Parcel Value"].apply(clean_num)
-                actual_ship = df_ngoai["Actual Shipping Fee"].apply(clean_num)
-                estimated_ship = df_ngoai["Estimated Shipping Fee"].apply(clean_num)
-                df_ngoai["shipping_fee"] = actual_ship.where(actual_ship != 0, estimated_ship)
+                df_ngoai["shipping_fee"] = df_ngoai["Actual Shipping Fee"].apply(clean_num)
 
                 gross_sales = df_ngoai.loc[is_customer, "parcel_value"].sum()
                 customer_shipping = df_ngoai.loc[is_customer, "shipping_fee"].sum()
@@ -345,11 +343,11 @@ if uploaded_files:
                 net_payout = gross_sales - customer_shipping
                 total_fees = customer_shipping
                 fee_detail = {
-                    "Phí vận chuyển bán hàng": customer_shipping,
-                    "Chi phí Marketing KOC": koc_ship,
-                    "Chi phí Gửi hàng bù": replacement_ship
+                    "Phí Vận Chuyển 3PL": customer_shipping,
+                    "Chi Phí Marketing KOC": koc_ship,
+                    "Chi Phí Gửi Hàng Bù": replacement_ship
                 }
-                ads_info = {"raw": koc_ship, "tax": 0.0, "total": koc_ship}
+                ads_info = {"raw": 0.0, "tax": 0.0, "total": 0.0}
                 external_metrics = {
                     "Tổng Doanh Thu Kiện Hàng": gross_sales,
                     "Chi Phí Marketing KOC": koc_ship,
@@ -456,103 +454,83 @@ with tab_detail:
     subtabs = st.tabs(shop_list)
     for idx, r in df_now.iterrows():
         with subtabs[idx]:
-            cL, cR = st.columns([1, 2])
-            with cL:
-                st.subheader(f"📌 {r['Shop']}")
-                st.write(f"- Kỳ báo cáo: **{r['Kỳ']}**")
-                st.write(f"- Doanh số thực nhận: **{r['Doanh số thực']:,.0f} đ**")
-                st.write(f"- Tổng phí sàn đã trừ: **{r['Phí sàn']:,.0f} đ**")
-                st.write(f"- Tiền Ads gốc: **{r['Chi phí Ads gốc']:,.0f} đ**")
-                st.write(f"- Thuế nạp Ads (10%): **{r['Thuế Ads (10%)']:,.0f} đ**")
-                st.write(f"- Giá vốn ({cogs_rate*100:.0f}%): **{r['Giá vốn']:,.0f} đ**")
+            st.subheader(f"📌 {r['Shop']} | {r['Kỳ']}")
+            revenue = float(r["Doanh số thực"])
+
+            def pnl_row(label, amount, section=False):
+                amount = float(amount)
+                ratio = amount / revenue * 100 if revenue > 0 else 0.0
+                return {
+                    "Khoản Mục": label,
+                    "Số Tiền (đ)": f"{amount:,.0f} đ",
+                    "Tỷ Trọng (% / Doanh Số Thực)": f"{ratio:.1f}%"
+                }
+
+            pnl_rows = [
+                {"Khoản Mục": "I. DOANH SỐ", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+                pnl_row("Doanh Số Thực Nhận", revenue),
+                {"Khoản Mục": "II. CHI PHÍ NỀN TẢNG / VẬN CHUYỂN", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+            ]
+
+            if r["Sàn"] == "Ngoại sàn":
+                platform_rows = [
+                    ("Phí Vận Chuyển 3PL", r["Phí sàn"]),
+                    ("Chi Phí Marketing KOC", r["Chi Phí Marketing KOC"]),
+                    ("Chi Phí Gửi Hàng Bù", r["Chi Phí Gửi Hàng Bù"]),
+                ]
+            else:
+                platform_rows = list(r["Chi tiết phí"].items())
+
+            pnl_rows.extend(pnl_row(label, amount) for label, amount in platform_rows)
+            platform_total = sum(float(amount) for _, amount in platform_rows)
+            pnl_rows.append(pnl_row("TỔNG CHI PHÍ NỀN TẢNG & VẬN CHUYỂN", platform_total))
+            pnl_rows.extend([
+                {"Khoản Mục": "III. CHI PHÍ MARKETING / QUẢNG CÁO", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+                pnl_row("Tiền Ads gốc", r["Chi phí Ads gốc"]),
+                pnl_row("Thuế Ads 10%", r["Thuế Ads (10%)"]),
+                pnl_row("TỔNG CHI PHÍ MARKETING", r["Chi phí Ads"]),
+                {"Khoản Mục": "IV. GIÁ VỐN & VẬN HÀNH", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+                pnl_row(f"Giá vốn hàng bán ({cogs_rate * 100:.0f}%)", r["Giá vốn"]),
+                {"Khoản Mục": "V. KẾT QUẢ KINH DOANH", "Số Tiền (đ)": "", "Tỷ Trọng (% / Doanh Số Thực)": ""},
+                pnl_row("LỢI NHUẬN RÒNG ĐÓNG GÓP", r["Lợi nhuận"]),
+            ])
+
+            pnl_df = pd.DataFrame(pnl_rows)
+            table_col, chart_col = st.columns([1.15, 1])
+            with table_col:
+                def highlight_profit(row):
+                    if row["Khoản Mục"] == "LỢI NHUẬN RÒNG ĐÓNG GÓP":
+                        color = "#d1fae5" if r["Lợi nhuận"] >= 0 else "#fee2e2"
+                        return [f"background-color: {color}; font-weight: 700"] * len(row)
+                    if row["Khoản Mục"].startswith(("I. ", "II. ", "III. ", "IV. ", "V. ")):
+                        return ["background-color: #e2e8f0; font-weight: 700"] * len(row)
+                    if row["Khoản Mục"].startswith("TỔNG "):
+                        return ["font-weight: 700; border-top: 1px solid #94a3b8"] * len(row)
+                    return [""] * len(row)
+
+                st.dataframe(
+                    pnl_df.style.apply(highlight_profit, axis=1),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            with chart_col:
                 if r["Sàn"] == "Ngoại sàn":
-                    external_card_1, external_card_2, external_card_3 = st.columns(3)
-                    external_card_1.metric(
-                        "Tổng Doanh Thu Kiện Hàng",
-                        f"{r['Tổng Doanh Thu Kiện Hàng']:,.0f} đ"
-                    )
-                    external_card_2.metric(
-                        "Chi Phí Marketing KOC",
-                        f"{r['Chi Phí Marketing KOC']:,.0f} đ"
-                    )
-                    external_card_3.metric(
-                        "Chi Phí Gửi Hàng Bù",
-                        f"{r['Chi Phí Gửi Hàng Bù']:,.0f} đ"
-                    )
-                st.write("---")
-                if r["Lợi nhuận"] >= 0:
-                    st.success(f"Lãi ròng đóng góp: {r['Lợi nhuận']:,.0f} đ")
+                    waterfall_labels = ["Doanh Số Thực", "Chi Phí Marketing KOC", "Chi Phí Gửi Hàng Bù", "Giá Vốn", "LỢI NHUẬN"]
+                    waterfall_values = [revenue, -r["Chi Phí Marketing KOC"], -r["Chi Phí Gửi Hàng Bù"], -r["Giá vốn"], 0]
                 else:
-                    st.error(f"Lỗ ròng đóng góp: {r['Lợi nhuận']:,.0f} đ")
-                
-                # Chi tiết phí sàn
-                if r["Chi tiết phí"]:
-                    with st.expander("📊 Bóc tách chi tiết các loại phí (% Chiếm dụng)"):
-                        fee_rows = []
-                        for fk, fv in r["Chi tiết phí"].items():
-                            val = float(fv)
-                            pct_sales = (val / r["Doanh số thực"] * 100) if r["Doanh số thực"] > 0 else 0.0
-                            pct_fees = (val / r["Phí sàn"] * 100) if r["Phí sàn"] > 0 else 0.0
+                    waterfall_labels = ["Doanh Số Thực", "Phí Sàn", "Chi Phí Ads", "Giá Vốn", "LỢI NHUẬN"]
+                    waterfall_values = [revenue, -r["Phí sàn"], -r["Chi phí Ads"], -r["Giá vốn"], 0]
 
-                            fee_rows.append({
-                                "Loại Chi Phí": fk,
-                                "Số Tiền (đ)": f"{val:,.0f} đ",
-                                "% / Doanh Số Thực": f"{pct_sales:.2f}%",
-                                "% Trong Tổng Phí": f"{pct_fees:.1f}%"
-                            })
-
-                        st.dataframe(pd.DataFrame(fee_rows), use_container_width=True, hide_index=True)
-            with cR:
-                chart_cols = st.columns(2) if r["Sàn"] in ["TikTok Shop", "Shopee"] else [st.container()]
-                with chart_cols[0]:
-                    if r["Sàn"] == "Ngoại sàn":
-                        waterfall_measure = ["relative", "relative", "relative", "relative", "total"]
-                        waterfall_labels = [
-                            "Doanh Số Thực", "Chi Phí Marketing KOC",
-                            "Chi Phí Gửi Hàng Bù", "Giá Vốn", "LỢI NHUẬN"
-                        ]
-                        waterfall_values = [
-                            r["Doanh số thực"],
-                            -r["Chi Phí Marketing KOC"],
-                            -r["Chi Phí Gửi Hàng Bù"],
-                            -r["Giá vốn"],
-                            0
-                        ]
-                    else:
-                        waterfall_measure = ["relative", "relative", "relative", "relative", "total"]
-                        waterfall_labels = ["Doanh Số Thực", "Phí Sàn", "Chi Phí Ads", "Giá Vốn", "LỢI NHUẬN"]
-                        waterfall_values = [r["Doanh số thực"], -r["Phí sàn"], -r["Chi phí Ads"], -r["Giá vốn"], 0]
-
-                    fig_wf = go.Figure(go.Waterfall(
-                        name="P&L", orientation="v",
-                        measure=waterfall_measure,
-                        x=waterfall_labels,
-                        y=waterfall_values,
-                        connector={"line": {"color": "rgb(63, 63, 63)"}},
-                    ))
-                    fig_wf.update_layout(title=f"Dòng Chảy Lợi Nhuận - {r['Shop']}", showlegend=False)
-                    st.plotly_chart(fig_wf, use_container_width=True)
-
-                if r["Sàn"] in ["TikTok Shop", "Shopee"]:
-                    with chart_cols[1]:
-                        fee_items = [(name, value) for name, value in r["Chi tiết phí"].items() if value > 0]
-                        if fee_items:
-                            fee_names, fee_values = zip(*fee_items)
-                            fig_donut = go.Figure(go.Pie(
-                                labels=list(fee_names),
-                                values=list(fee_values),
-                                hole=0.4,
-                                textinfo="label+percent",
-                                hovertemplate="%{label}: %{value:,.0f} đ<extra></extra>",
-                            ))
-                            fig_donut.update_layout(
-                                title="Cơ cấu phí sàn",
-                                showlegend=False,
-                                margin={"t": 60, "b": 10, "l": 10, "r": 10},
-                            )
-                            st.plotly_chart(fig_donut, use_container_width=True)
-                        else:
-                            st.info("Chưa có dữ liệu chi tiết phí sàn để vẽ biểu đồ.")
+                fig_wf = go.Figure(go.Waterfall(
+                    name="P&L",
+                    orientation="v",
+                    measure=["relative", "relative", "relative", "relative", "total"],
+                    x=waterfall_labels,
+                    y=waterfall_values,
+                    connector={"line": {"color": "rgb(63, 63, 63)"}},
+                ))
+                fig_wf.update_layout(title=f"Dòng Chảy Lợi Nhuận - {r['Shop']}", showlegend=False)
+                st.plotly_chart(fig_wf, use_container_width=True)
 
 st.markdown("---")
 
