@@ -5,9 +5,13 @@ import plotly.graph_objects as go
 import datetime
 import json
 import re
+import os
+from google import genai
 
 # Cấu hình giao diện Streamlit rộng toàn màn hình
 st.set_page_config(page_title="Dashboard Quản Trị Đa Sàn", layout="wide", page_icon="📊")
+
+client = genai.Client(api_key=st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "")))
 
 # ==================== 1. FORM BẢO VỆ BẰNG MẬT KHẨU ====================
 def check_password():
@@ -308,11 +312,51 @@ def save_history(rows):
         st.error(f"Không thể ghi dữ liệu vào file lịch sử: {error}")
         return False
 
-# ==================== 3. THANH ĐIỀU HƯỚNG BÊN TRÁI (SIDEBAR) ====================
+def analyze_shop_pnl_with_gemini(
+    shop_name, period, gmv, net_payout, total_fees, fee_details,
+    ads_cost, cogs, mam, mam_pct
+):
+    """Gửi P&L của một shop tới Gemini và trả về bản phân tích dạng Markdown."""
+    api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+    if not api_key:
+        return "Chưa cấu hình `GEMINI_API_KEY`. Hãy thêm `GEMINI_API_KEY` vào secrets hoặc biến môi trường để sử dụng Gemini."
+
+    prompt = f"""Bạn là CFO và chuyên gia tối ưu vận hành sàn thương mại điện tử cho chủ shop.
+Hãy phân tích P&L thực tế dưới đây bằng tiếng Việt, văn phong thực chiến, rõ ràng,
+không nói chung chung và không tự bịa thêm số liệu:
+
+- Shop: {shop_name}
+- Kỳ báo cáo: {period}
+- GMV / Tổng doanh thu gốc: {gmv:,.0f} đ
+- Tiền thực nhận về ví: {net_payout:,.0f} đ
+- Tổng phí sàn: {total_fees:,.0f} đ
+- Chi tiết phí sàn: {json.dumps(fee_details, ensure_ascii=False, default=str)}
+- Chi phí Ads: {ads_cost:,.0f} đ
+- Giá vốn hàng bán (COGS): {cogs:,.0f} đ
+- MAM: {mam:,.0f} đ
+- Biên MAM: {mam_pct:.1f}%
+
+Trình bày đúng 4 mục bằng tiêu đề Markdown và gạch đầu dòng:
+1. Sức khỏe dòng tiền & Cảnh báo nguy cơ lỗ: đánh giá biên MAM có gánh nổi chi phí cố định như mặt bằng, lương, điện nước hay không.
+2. Bóc tách rò rỉ phí sàn: chỉ ra lệch cước, voucher, affiliate và phí bất thường nếu dữ liệu có phát sinh; nêu cách can thiệp cụ thể.
+3. Hiệu quả Ads & KOC: kết luận nên vít đơn hay cắt giảm dựa trên tương quan chi phí và doanh thu hiện có.
+4. 3 hành động cụ thể cần làm ngay trong tuần tới: ưu tiên việc có thể đo lường.
+
+Luôn nêu con số và tỷ lệ từ dữ liệu đã cung cấp khi có thể. Không khẳng định chắc chắn nguyên nhân nếu dữ liệu chưa đủ.
+"""
+
+    try:
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        return response.text or "Gemini không trả về nội dung phân tích."
+    except Exception as error:
+        error_text = str(error).lower()
+        if "api key" in error_text or "authentication" in error_text or "unauthenticated" in error_text:
+            return "Không thể xác thực Gemini. Vui lòng kiểm tra lại `GEMINI_API_KEY`."
+        return f"Gemini chưa thể phân tích lúc này (có thể do mất kết nối hoặc giới hạn API). Chi tiết: {error}"
+
 with st.sidebar:
     st.header("⚙️ Nạp Báo Cáo")
     cogs_rate = st.slider("Tỷ lệ Giá Vốn Hàng Bán (% Doanh số):", min_value=20, max_value=70, value=45, step=1) / 100.0
-    
     uploaded_files = st.file_uploader(
         "Kéo thả các file tuần/tháng vào đây:",
         type=["xlsx", "csv"],
@@ -642,6 +686,29 @@ with tab_detail:
                 )
                 st.caption("(Chưa bao gồm chi phí cố định: Mặt bằng, Lương nhân sự, Điện nước, Khấu hao & Vận hành chung)")
                 render_shop_analysis(r)
+                shop_name = str(r["Shop"])
+                period = str(r["Kỳ"])
+                if st.button(
+                    "✨ Phân tích số liệu shop này cùng Gemini",
+                    key=f"btn_gemini_{shop_name}_{period}",
+                ):
+                    with st.spinner("Gemini đang phân tích..."):
+                        gemini_analysis = analyze_shop_pnl_with_gemini(
+                            shop_name=shop_name,
+                            period=period,
+                            gmv=gross_revenue,
+                            net_payout=wallet_revenue,
+                            total_fees=float(r["Tổng Phí Sàn Đã Trừ"]),
+                            fee_details=r.get("Chi tiết phí", {}),
+                            ads_cost=float(r["Chi phí Ads"]),
+                            cogs=float(r["Giá vốn"]),
+                            mam=float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]),
+                            mam_pct=(
+                                float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) / gross_revenue * 100
+                                if gross_revenue > 0 else 0.0
+                            ),
+                        )
+                    st.markdown(gemini_analysis)
             with chart_col:
                 waterfall_labels = [
                     "Doanh Thu Gốc", "Phí Sàn / 3PL", "Thực Nhận Về Ví",
