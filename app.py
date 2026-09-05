@@ -20,7 +20,7 @@ def check_password():
         return True
 
     st.markdown("### 🔒 Đăng Nhập Quản Trị Hệ Thống")
-    with st.form("password_form"):
+    with st.form("password_form", clear_on_submit=True):
         st.text_input(
             "Nhập mật khẩu truy cập nội bộ:",
             type="password",
@@ -29,9 +29,12 @@ def check_password():
         submitted = st.form_submit_button("Đăng nhập")
 
     if submitted:
-        correct_password = st.secrets.get("PASSWORD", "baggu123")
-        entered_password = st.session_state.get("password_input", "")
-        st.session_state["password_correct"] = entered_password == correct_password
+        correct_password = str(st.secrets.get("PASSWORD", "admin123")).strip()
+        user_input = str(st.session_state.get("password_input", "")).strip()
+        if user_input == correct_password:
+            st.session_state["password_correct"] = True
+        else:
+            st.session_state["password_correct"] = False
         if st.session_state["password_correct"]:
             st.session_state.pop("password_input", None)
             return True
