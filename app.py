@@ -352,11 +352,32 @@ Luôn nêu con số và tỷ lệ từ dữ liệu đã cung cấp khi có thể
 Trả lời ngắn gọn, cô đọng, súc tích tối đa 250 từ. Đi thẳng vào hành động và con số, không giải thích vòng vo.
 """
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
+    def is_resource_exhausted(error):
+        error_text = str(error).lower()
+        status_code = getattr(error, "status_code", None)
+        response = getattr(error, "response", None)
+        response_status = getattr(response, "status_code", None)
+        return (
+            status_code == 429
+            or response_status == 429
+            or "resource_exhausted" in error_text
+            or "resource exhausted" in error_text
+            or " 429" in error_text
         )
+
+    try:
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+            )
+        except Exception as primary_error:
+            if not is_resource_exhausted(primary_error):
+                raise
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+            )
         full_text = response.text
         return full_text or "Gemini không trả về nội dung phân tích."
     except Exception as error:
