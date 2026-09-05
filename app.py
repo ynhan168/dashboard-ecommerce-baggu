@@ -204,6 +204,78 @@ def rows_for_csv(rows):
         serialized.append(output)
     return pd.DataFrame(serialized, columns=DATA_COLUMNS)
 
+def render_shop_analysis(row):
+    """Tạo báo cáo hành động theo góc nhìn vận hành của chủ shop."""
+    gross_revenue = clean_num(row.get("Tổng Doanh Thu Gốc", 0))
+    net_payout = clean_num(row.get("Doanh Số Thực Nhận Về Ví", 0))
+    mam = clean_num(row.get("Lợi Nhuận Gộp Sau Marketing (MAM)", 0))
+    platform_fees = clean_num(row.get("Tổng Phí Sàn Đã Trừ", 0))
+    ad_cost = clean_num(row.get("Chi phí Ads", 0))
+    mam_pct = mam / gross_revenue * 100 if gross_revenue > 0 else 0.0
+    payout_pct = net_payout / gross_revenue * 100 if gross_revenue > 0 else 0.0
+    platform_fee_pct = platform_fees / gross_revenue * 100 if gross_revenue > 0 else 0.0
+    cir_pct = ad_cost / gross_revenue * 100 if gross_revenue > 0 else 0.0
+
+    fee_detail = row.get("Chi tiết phí", {})
+    fee_detail = fee_detail if isinstance(fee_detail, dict) else {}
+
+    def matching_fee(*keywords):
+        return sum(
+            clean_num(amount)
+            for label, amount in fee_detail.items()
+            if any(keyword in str(label).lower() for keyword in keywords)
+        )
+
+    shipping_adjustment = matching_fee(
+        "shipping fee adjustment", "phí chênh lệch", "chênh lệch vận chuyển", "điều chỉnh cước"
+    )
+    affiliate_fee = matching_fee("affiliate", "tiếp thị liên kết", "hoa hồng liên kết")
+
+    if mam_pct < 0:
+        status = "error"
+    elif mam_pct < 15:
+        status = "warning"
+    else:
+        status = "info"
+
+    insights = []
+    if mam_pct < 15:
+        insights.append(
+            f"🚨 **NGUY CƠ LỖ NGẦM NẶNG!** Biên đóng góp chỉ đạt **{mam_pct:.1f}%**, hoàn toàn không đủ gánh chi phí cố định (Mặt bằng, lương, điện nước). Cần rà soát ngay chi phí Ads và cấu trúc giá bán."
+        )
+    if mam_pct < 0:
+        insights.append("🚨 **SHOP ĐANG BÁN LỖ TIỀN MẶT!** Càng ra nhiều đơn càng âm vốn.")
+
+    insights.append(
+        f"💵 Dòng tiền thực nhận về ví kỳ này của shop là: **{net_payout:,.0f} đ** (chiếm **{payout_pct:.1f}%** trên tổng doanh thu đơn hàng). Đây là lượng tiền mặt thực tế sẵn sàng để tái nhập hàng hoặc thanh toán công nợ."
+    )
+
+    if shipping_adjustment > 0:
+        insights.append(
+            f"🔍 Phát hiện bù cước cân nặng/kích thước: **{shipping_adjustment:,.0f} đ**! Nguyên nhân: Kho cài sai kích thước ba chiều hoặc bị 3PL cân gian. Cần kiểm tra lại master data kích thước của các SKU bán chạy để khiếu nại sàn."
+        )
+    if platform_fee_pct > 18:
+        insights.append(
+            f"🔍 Tổng phí nền tảng đang **bào** tới **{platform_fee_pct:.1f}%** doanh thu gốc. Xem xét tắt bớt gói Voucher Xtra hoặc FreeShip Xtra nếu tệp khách hàng mua không cần voucher này."
+        )
+    if affiliate_fee > gross_revenue * 0.10:
+        insights.append(
+            f"🔍 Chi phí hoa hồng Affiliate đang cao (**{affiliate_fee:,.0f} đ**). Cần rà soát lại danh sách Creator, chuyển các KOC ra đơn đều sang mức hoa hồng riêng (Targeted) thay vì để Open Commission quá cao."
+        )
+
+    if cir_pct > 25:
+        insights.append(
+            f"💡 Chi phí Ads chiếm **{cir_pct:.1f}%** doanh thu – Ads đang ăn vào thịt! Cần rà lại các chiến dịch ROAS thấp, tắt ngay các từ khóa/video chạy kém hiệu quả."
+        )
+    elif cir_pct < 10 and mam_pct > 25:
+        insights.append(
+            f"💡 Shop đang có biên độ rất khỏe, hiệu quả Ads tốt (**{cir_pct:.1f}%**). Đây là kênh đem lại 'tiền tươi thóc thật' chủ lực, nên tăng ngân sách hoặc dồn lực vít đơn kỳ tới."
+        )
+
+    message = "\n\n".join(f"- {insight}" for insight in insights)
+    st.markdown("#### BÁO CÁO PHÂN TÍCH & ĐỀ XUẤT HÀNH ĐỘNG (GÓC NHÌN CHỦ SHOP)")
+    getattr(st, status)(message)
+
 def load_history():
     try:
         history = pd.read_csv(HISTORY_FILE)
@@ -569,6 +641,7 @@ with tab_detail:
                     hide_index=True,
                 )
                 st.caption("(Chưa bao gồm chi phí cố định: Mặt bằng, Lương nhân sự, Điện nước, Khấu hao & Vận hành chung)")
+                render_shop_analysis(r)
             with chart_col:
                 waterfall_labels = [
                     "Doanh Thu Gốc", "Phí Sàn / 3PL", "Thực Nhận Về Ví",
