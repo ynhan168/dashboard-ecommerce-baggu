@@ -346,7 +346,7 @@ Luôn nêu con số và tỷ lệ từ dữ liệu đã cung cấp khi có thể
 """
 
     try:
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        response = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
         return response.text or "Gemini không trả về nội dung phân tích."
     except Exception as error:
         error_text = str(error).lower()
