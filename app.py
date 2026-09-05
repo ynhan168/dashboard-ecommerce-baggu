@@ -15,30 +15,29 @@ client = genai.Client(api_key=st.secrets.get("GEMINI_API_KEY", os.environ.get("G
 
 # ==================== 1. FORM BẢO VỆ BẰNG MẬT KHẨU ====================
 def check_password():
-    def password_entered():
-        # Lấy mật khẩu an toàn: ưu tiên đọc từ secrets (khi lên web), nếu ở máy cá nhân chưa có file thì mặc định là 'admin123'
-        correct_password = "admin123"
-        try:
-            if hasattr(st, "secrets") and "PASSWORD" in st.secrets:
-                correct_password = st.secrets["PASSWORD"]
-        except Exception:
-            correct_password = "admin123"
+    st.session_state.setdefault("password_correct", False)
+    if st.session_state.get("password_correct", False):
+        return True
 
-        if st.session_state["password_input"] == correct_password:
-            st.session_state["password_correct"] = True
-            del st.session_state["password_input"]
-        else:
-            st.session_state["password_correct"] = False
+    st.markdown("### 🔒 Đăng Nhập Quản Trị Hệ Thống")
+    with st.form("password_form"):
+        st.text_input(
+            "Nhập mật khẩu truy cập nội bộ:",
+            type="password",
+            key="password_input",
+        )
+        submitted = st.form_submit_button("Đăng nhập")
 
-    if "password_correct" not in st.session_state:
-        st.markdown("### 🔒 Đăng Nhập Quản Trị Hệ Thống")
-        st.text_input("Nhập mật khẩu truy cập nội bộ:", type="password", on_change=password_entered, key="password_input")
-        return False
-    elif not st.session_state["password_correct"]:
-        st.markdown("### 🔒 Đăng Nhập Quản Trị Hệ Thống")
-        st.text_input("Mật khẩu không đúng, vui lòng nhập lại:", type="password", on_change=password_entered, key="password_input")
-        return False
-    return True
+    if submitted:
+        correct_password = st.secrets.get("PASSWORD", "baggu123")
+        entered_password = st.session_state.get("password_input", "")
+        st.session_state["password_correct"] = entered_password == correct_password
+        if st.session_state["password_correct"]:
+            st.session_state.pop("password_input", None)
+            return True
+        st.error("Mật khẩu không đúng, vui lòng nhập lại.")
+
+    return False
 
 if not check_password():
     st.stop()
@@ -208,6 +207,73 @@ def rows_for_csv(rows):
         serialized.append(output)
     return pd.DataFrame(serialized, columns=DATA_COLUMNS)
 
+def render_shop_analysis(row):
+    """Hiển thị nhận định nghiệp vụ tức thì từ các chỉ số P&L của shop."""
+    gross_revenue = clean_num(row.get("Tổng Doanh Thu Gốc", 0))
+    net_payout = clean_num(row.get("Doanh Số Thực Nhận Về Ví", 0))
+    mam = clean_num(row.get("Lợi Nhuận Gộp Sau Marketing (MAM)", 0))
+    platform_fees = clean_num(row.get("Tổng Phí Sàn Đã Trừ", 0))
+    ads_cost = clean_num(row.get("Chi phí Ads", 0))
+    mam_pct = mam / gross_revenue * 100 if gross_revenue > 0 else 0.0
+    payout_pct = net_payout / gross_revenue * 100 if gross_revenue > 0 else 0.0
+    fee_pct = platform_fees / gross_revenue * 100 if gross_revenue > 0 else 0.0
+    cir_pct = ads_cost / gross_revenue * 100 if gross_revenue > 0 else 0.0
+    fee_details = row.get("Chi tiết phí", {})
+    fee_details = fee_details if isinstance(fee_details, dict) else {}
+
+    def matching_fee(*keywords):
+        return sum(
+            clean_num(amount)
+            for label, amount in fee_details.items()
+            if any(keyword in str(label).lower() for keyword in keywords)
+        )
+
+    shipping_adjustment = matching_fee(
+        "shipping fee adjustment", "phí chênh lệch", "chênh lệch vận chuyển", "điều chỉnh cước"
+    )
+    affiliate_fee = matching_fee("affiliate", "tiếp thị liên kết", "hoa hồng liên kết")
+    if mam_pct < 0:
+        status = "error"
+    elif mam_pct < 15:
+        status = "warning"
+    else:
+        status = "info"
+
+    insights = []
+    if mam_pct < 15:
+        insights.append(
+            f"🚨 **NGUY CƠ LỖ NGẦM NẶNG!** Biên đóng góp chỉ đạt **{mam_pct:.1f}%**, hoàn toàn không đủ gánh chi phí cố định (Mặt bằng, lương, điện nước). Cần rà soát ngay chi phí Ads và cấu trúc giá bán."
+        )
+    if mam_pct < 0:
+        insights.append("🚨 **SHOP ĐANG BÁN LỖ TIỀN MẶT!** Càng ra nhiều đơn càng âm vốn.")
+    insights.append(
+        f"💵 Dòng tiền thực nhận về ví kỳ này của shop là: **{net_payout:,.0f} đ** (chiếm **{payout_pct:.1f}%** trên tổng doanh thu đơn hàng). Đây là lượng tiền mặt thực tế sẵn sàng để tái nhập hàng hoặc thanh toán công nợ."
+    )
+    if shipping_adjustment > 0:
+        insights.append(
+            f"🔍 Phát hiện bù cước cân nặng/kích thước: **{shipping_adjustment:,.0f} đ**! Cần kiểm tra master data kích thước SKU bán chạy và đối soát với 3PL để khiếu nại sàn."
+        )
+    if fee_pct > 18:
+        insights.append(
+            f"🔍 Tổng phí nền tảng đang **bào** tới **{fee_pct:.1f}%** doanh thu gốc. Xem xét tắt bớt gói Voucher Xtra hoặc FreeShip Xtra nếu tệp khách hàng không cần voucher."
+        )
+    if affiliate_fee > gross_revenue * 0.10:
+        insights.append(
+            f"🔍 Chi phí hoa hồng Affiliate đang cao (**{affiliate_fee:,.0f} đ**). Rà soát Creator và chuyển KOC ra đơn đều sang mức Targeted thay vì Open Commission quá cao."
+        )
+    if cir_pct > 25:
+        insights.append(
+            f"💡 Chi phí Ads chiếm **{cir_pct:.1f}%** doanh thu – Ads đang ăn vào thịt! Rà lại chiến dịch ROAS thấp và tắt từ khóa/video chạy kém hiệu quả."
+        )
+    elif cir_pct < 10 and mam_pct > 25:
+        insights.append(
+            f"💡 Shop đang có biên độ rất khỏe, hiệu quả Ads tốt (**{cir_pct:.1f}%**). Nên tăng ngân sách hoặc dồn lực vít đơn kỳ tới."
+        )
+
+    message = "\n\n".join(f"- {insight}" for insight in insights)
+    st.markdown("### BÁO CÁO PHÂN TÍCH & ĐỀ XUẤT HÀNH ĐỘNG (GÓC NHÌN CHỦ SHOP)")
+    getattr(st, status)(message)
+
 def load_history():
     try:
         history = pd.read_csv(HISTORY_FILE)
@@ -245,6 +311,15 @@ def analyze_shop_pnl_with_gemini(
     ads_cost, cogs, mam, mam_pct
 ):
     """Gửi P&L của một shop tới Gemini và trả về bản phân tích dạng Markdown."""
+    safe_gmv = float(gmv) if gmv else 0.0
+    safe_net = float(net_payout) if net_payout else 0.0
+    safe_total_fees = float(total_fees) if total_fees else 0.0
+    safe_ads_cost = float(ads_cost) if ads_cost else 0.0
+    safe_cogs = float(cogs) if cogs else 0.0
+    safe_mam = float(mam) if mam else 0.0
+    safe_mam_pct = float(mam_pct) if mam_pct else 0.0
+    safe_fee_details = fee_details if isinstance(fee_details, dict) else {}
+
     api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     if not api_key:
         return "Chưa cấu hình `GEMINI_API_KEY`. Hãy thêm `GEMINI_API_KEY` vào secrets hoặc biến môi trường để sử dụng Gemini."
@@ -255,14 +330,14 @@ không nói chung chung và không tự bịa thêm số liệu:
 
 - Shop: {shop_name}
 - Kỳ báo cáo: {period}
-- GMV / Tổng doanh thu gốc: {gmv:,.0f} đ
-- Tiền thực nhận về ví: {net_payout:,.0f} đ
-- Tổng phí sàn: {total_fees:,.0f} đ
-- Chi tiết phí sàn: {json.dumps(fee_details, ensure_ascii=False, default=str)}
-- Chi phí Ads: {ads_cost:,.0f} đ
-- Giá vốn hàng bán (COGS): {cogs:,.0f} đ
-- MAM: {mam:,.0f} đ
-- Biên MAM: {mam_pct:.1f}%
+- GMV / Tổng doanh thu gốc: {safe_gmv:,.0f} VNĐ
+- Tiền thực nhận về ví: {safe_net:,.0f} VNĐ
+- Tổng phí sàn: {safe_total_fees:,.0f} VNĐ
+- Chi tiết phí sàn: {json.dumps(safe_fee_details, ensure_ascii=False, default=str)}
+- Chi phí Ads: {safe_ads_cost:,.0f} VNĐ
+- Giá vốn hàng bán (COGS): {safe_cogs:,.0f} VNĐ
+- MAM: {safe_mam:,.0f} VNĐ
+- Biên MAM: {safe_mam_pct:.1f}%
 
 Trình bày đúng 4 mục bằng tiêu đề Markdown và gạch đầu dòng:
 1. Sức khỏe dòng tiền & Cảnh báo nguy cơ lỗ: đánh giá biên MAM có gánh nổi chi phí cố định như mặt bằng, lương, điện nước hay không.
@@ -275,13 +350,12 @@ Trả lời ngắn gọn, cô đọng, súc tích tối đa 250 từ. Đi thẳn
 """
 
     try:
-        response = client.models.generate_content_stream(
+        response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt,
-            config={"max_output_tokens": 800},
         )
-        analysis = st.write_stream(chunk.text for chunk in response if chunk.text)
-        return analysis or "Gemini không trả về nội dung phân tích."
+        full_text = response.text
+        return full_text or "Gemini không trả về nội dung phân tích."
     except Exception as error:
         error_text = str(error).lower()
         if "api key" in error_text or "authentication" in error_text or "unauthenticated" in error_text:
@@ -619,28 +693,38 @@ with tab_detail:
                     hide_index=True,
                 )
                 st.caption("(Chưa bao gồm chi phí cố định: Mặt bằng, Lương nhân sự, Điện nước, Khấu hao & Vận hành chung)")
+                render_shop_analysis(r)
                 shop_name = str(r["Shop"])
                 period = str(r["Kỳ"])
-                cache_key = f"ai_analysis_{shop_name}_{period}_{gross_revenue}_{float(r['Giá vốn'])}"
-                if cache_key not in st.session_state:
-                    with st.spinner("🤖 Gemini đang phân tích tài chính & rà soát phí sàn..."):
-                        st.session_state[cache_key] = analyze_shop_pnl_with_gemini(
-                            shop_name=shop_name,
-                            period=period,
-                            gmv=gross_revenue,
-                            net_payout=wallet_revenue,
-                            total_fees=float(r["Tổng Phí Sàn Đã Trừ"]),
-                            fee_details=r.get("Chi tiết phí", {}),
-                            ads_cost=float(r["Chi phí Ads"]),
-                            cogs=float(r["Giá vốn"]),
-                            mam=float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]),
-                            mam_pct=(
-                                float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) / gross_revenue * 100
-                                if gross_revenue > 0 else 0.0
-                            ),
-                        )
-                else:
-                    st.markdown(st.session_state[cache_key])
+                result_key = f"gemini_result_{shop_name}_{period}"
+                if st.button("✨ Phân tích chuyên sâu cùng Gemini", key=f"btn_ai_{shop_name}_{period}"):
+                    with st.spinner("🤖 Gemini đang rà soát dữ liệu phí sàn & lập báo cáo..."):
+                        try:
+                            st.session_state[result_key] = analyze_shop_pnl_with_gemini(
+                                shop_name=shop_name,
+                                period=period,
+                                gmv=float(gross_revenue) if gross_revenue else 0.0,
+                                net_payout=float(wallet_revenue) if wallet_revenue else 0.0,
+                                total_fees=float(r["Tổng Phí Sàn Đã Trừ"]) if r["Tổng Phí Sàn Đã Trừ"] else 0.0,
+                                fee_details=r.get("Chi tiết phí", {}),
+                                ads_cost=float(r["Chi phí Ads"]) if r["Chi phí Ads"] else 0.0,
+                                cogs=float(r["Giá vốn"]) if r["Giá vốn"] else 0.0,
+                                mam=float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) if r["Lợi Nhuận Gộp Sau Marketing (MAM)"] else 0.0,
+                                mam_pct=(
+                                    float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) / float(gross_revenue) * 100
+                                    if gross_revenue else 0.0
+                                ),
+                            )
+                        except Exception as error:
+                            st.session_state[result_key] = f"⚠️ Lỗi phân tích: {error}"
+
+                if result_key in st.session_state:
+                    with st.container():
+                        st.markdown("### 🤖 Báo Cáo Phân Tích Chuyên Sâu (Gemini AI)")
+                        st.markdown(st.session_state[result_key])
+                        if st.button("🔄 Phân tích lại", key=f"re_run_{result_key}"):
+                            del st.session_state[result_key]
+                            st.rerun()
             with chart_col:
                 waterfall_labels = [
                     "Doanh Thu Gốc", "Phí Sàn / 3PL", "Thực Nhận Về Ví",
