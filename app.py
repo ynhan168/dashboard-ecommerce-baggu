@@ -6,6 +6,7 @@ import datetime
 import json
 import re
 import os
+import time
 from google import genai
 
 # Cấu hình giao diện Streamlit rộng toàn màn hình
@@ -352,39 +353,24 @@ Luôn nêu con số và tỷ lệ từ dữ liệu đã cung cấp khi có thể
 Trả lời ngắn gọn, cô đọng, súc tích tối đa 250 từ. Đi thẳng vào hành động và con số, không giải thích vòng vo.
 """
 
-    def is_resource_exhausted(error):
-        error_text = str(error).lower()
-        status_code = getattr(error, "status_code", None)
-        response = getattr(error, "response", None)
-        response_status = getattr(response, "status_code", None)
-        return (
-            status_code == 429
-            or response_status == 429
-            or "resource_exhausted" in error_text
-            or "resource exhausted" in error_text
-            or " 429" in error_text
-        )
-
-    try:
+    for attempt in range(2):
         try:
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3.6-flash",
                 contents=prompt,
             )
-        except Exception as primary_error:
-            if not is_resource_exhausted(primary_error):
-                raise
-            response = client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=prompt,
-            )
-        full_text = response.text
-        return full_text or "Gemini không trả về nội dung phân tích."
-    except Exception as error:
-        error_text = str(error).lower()
-        if "api key" in error_text or "authentication" in error_text or "unauthenticated" in error_text:
-            return "Không thể xác thực Gemini. Vui lòng kiểm tra lại `GEMINI_API_KEY`."
-        return f"Gemini chưa thể phân tích lúc này (có thể do mất kết nối hoặc giới hạn API). Chi tiết: {error}"
+            return response.text or "Gemini không trả về nội dung phân tích."
+        except Exception as error:
+            err_msg = str(error)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                if attempt == 0:
+                    time.sleep(5)
+                    continue
+                return "⚠️ Hệ thống đang quá tải lượt gọi API tạm thời. Vui lòng đợi khoảng 30-40 giây rồi bấm 'Phân tích lại'."
+            error_text = err_msg.lower()
+            if "api key" in error_text or "authentication" in error_text or "unauthenticated" in error_text:
+                return "Không thể xác thực Gemini. Vui lòng kiểm tra lại `GEMINI_API_KEY`."
+            return f"⚠️ Lỗi kết nối Gemini: {err_msg}"
 
 with st.sidebar:
     st.header("⚙️ Nạp Báo Cáo")
