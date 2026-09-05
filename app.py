@@ -315,43 +315,27 @@ def analyze_shop_pnl_with_gemini(
     ads_cost, cogs, mam, mam_pct
 ):
     """Gửi P&L của một shop tới Gemini và trả về bản phân tích dạng Markdown."""
-    safe_gmv = float(gmv) if gmv else 0.0
-    safe_net = float(net_payout) if net_payout else 0.0
-    safe_total_fees = float(total_fees) if total_fees else 0.0
-    safe_ads_cost = float(ads_cost) if ads_cost else 0.0
-    safe_cogs = float(cogs) if cogs else 0.0
-    safe_mam = float(mam) if mam else 0.0
-    safe_mam_pct = float(mam_pct) if mam_pct else 0.0
-    safe_fee_details = fee_details if isinstance(fee_details, dict) else {}
-
     api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     if not api_key:
-        return "Chưa cấu hình `GEMINI_API_KEY`. Hãy thêm `GEMINI_API_KEY` vào secrets hoặc biến môi trường để sử dụng Gemini."
+        return "⚠️ Chưa cấu hình GEMINI_API_KEY trong Secrets. Vui lòng thêm key để kích hoạt tính năng AI."
 
-    prompt = f"""Bạn là CFO và chuyên gia tối ưu vận hành sàn thương mại điện tử cho chủ shop.
-Hãy phân tích P&L thực tế dưới đây bằng tiếng Việt, văn phong thực chiến, rõ ràng,
-không nói chung chung và không tự bịa thêm số liệu:
+    client = genai.Client(api_key=api_key)
+    prompt = f"""
+    Bạn là Giám đốc Tài chính (CFO) chuyên tối ưu sàn TMĐT (TikTok Shop, Shopee, 3PL).
+    Hãy đánh giá nhanh bức tranh P&L của shop sau:
+    - Shop: {shop_name} | Kỳ: {period}
+    - GMV: {float(gmv):,.0f} đ | Thực nhận ví: {float(net_payout):,.0f} đ
+    - Tổng phí sàn/vận chuyển: {float(total_fees):,.0f} đ (Chi tiết: {fee_details})
+    - Chi phí Ads/Marketing: {float(ads_cost):,.0f} đ
+    - Giá vốn (COGS): {float(cogs):,.0f} đ
+    - Lợi nhuận MAM: {float(mam):,.0f} đ (Biên độ: {float(mam_pct):.1f}%)
 
-- Shop: {shop_name}
-- Kỳ báo cáo: {period}
-- GMV / Tổng doanh thu gốc: {safe_gmv:,.0f} VNĐ
-- Tiền thực nhận về ví: {safe_net:,.0f} VNĐ
-- Tổng phí sàn: {safe_total_fees:,.0f} VNĐ
-- Chi tiết phí sàn: {json.dumps(safe_fee_details, ensure_ascii=False, default=str)}
-- Chi phí Ads: {safe_ads_cost:,.0f} VNĐ
-- Giá vốn hàng bán (COGS): {safe_cogs:,.0f} VNĐ
-- MAM: {safe_mam:,.0f} VNĐ
-- Biên MAM: {safe_mam_pct:.1f}%
-
-Trình bày đúng 4 mục bằng tiêu đề Markdown và gạch đầu dòng:
-1. Sức khỏe dòng tiền & Cảnh báo nguy cơ lỗ: đánh giá biên MAM có gánh nổi chi phí cố định như mặt bằng, lương, điện nước hay không.
-2. Bóc tách rò rỉ phí sàn: chỉ ra lệch cước, voucher, affiliate và phí bất thường nếu dữ liệu có phát sinh; nêu cách can thiệp cụ thể.
-3. Hiệu quả Ads & KOC: kết luận nên vít đơn hay cắt giảm dựa trên tương quan chi phí và doanh thu hiện có.
-4. 3 hành động cụ thể cần làm ngay trong tuần tới: ưu tiên việc có thể đo lường.
-
-Luôn nêu con số và tỷ lệ từ dữ liệu đã cung cấp khi có thể. Không khẳng định chắc chắn nguyên nhân nếu dữ liệu chưa đủ.
-Trả lời ngắn gọn, cô đọng, súc tích tối đa 250 từ. Đi thẳng vào hành động và con số, không giải thích vòng vo.
-"""
+    Yêu cầu nhận định ngắn gọn, sắc bén bằng tiếng Việt:
+    1. 🚨 Dòng tiền & Cảnh báo rủi ro lỗ.
+    2. 🔍 Bóc tách rò rỉ phí sàn (lệch cước, gói voucher, affiliate).
+    3. 🎯 Hiệu quả Ads & đề xuất tăng/giảm ngân sách.
+    4. 💡 3 việc cần làm ngay tuần tới.
+    """
 
     for attempt in range(2):
         try:
@@ -359,12 +343,12 @@ Trả lời ngắn gọn, cô đọng, súc tích tối đa 250 từ. Đi thẳn
                 model="gemini-3.6-flash",
                 contents=prompt,
             )
-            return response.text or "Gemini không trả về nội dung phân tích."
+            return response.text
         except Exception as error:
             err_msg = str(error)
             if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
                 if attempt == 0:
-                    time.sleep(5)
+                    time.sleep(6)
                     continue
                 return "⚠️ Hệ thống đang quá tải lượt gọi API tạm thời. Vui lòng đợi khoảng 30-40 giây rồi bấm 'Phân tích lại'."
             error_text = err_msg.lower()
@@ -707,32 +691,37 @@ with tab_detail:
                 shop_name = str(r["Shop"])
                 period = str(r["Kỳ"])
                 result_key = f"gemini_result_{shop_name}_{period}"
-                if st.button("✨ Phân tích chuyên sâu cùng Gemini", key=f"btn_ai_{shop_name}_{period}"):
-                    with st.spinner("🤖 Gemini đang rà soát dữ liệu phí sàn & lập báo cáo..."):
-                        try:
-                            st.session_state[result_key] = analyze_shop_pnl_with_gemini(
-                                shop_name=shop_name,
-                                period=period,
-                                gmv=float(gross_revenue) if gross_revenue else 0.0,
-                                net_payout=float(wallet_revenue) if wallet_revenue else 0.0,
-                                total_fees=float(r["Tổng Phí Sàn Đã Trừ"]) if r["Tổng Phí Sàn Đã Trừ"] else 0.0,
-                                fee_details=r.get("Chi tiết phí", {}),
-                                ads_cost=float(r["Chi phí Ads"]) if r["Chi phí Ads"] else 0.0,
-                                cogs=float(r["Giá vốn"]) if r["Giá vốn"] else 0.0,
-                                mam=float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) if r["Lợi Nhuận Gộp Sau Marketing (MAM)"] else 0.0,
-                                mam_pct=(
-                                    float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) / float(gross_revenue) * 100
-                                    if gross_revenue else 0.0
-                                ),
-                            )
-                        except Exception as error:
-                            st.session_state[result_key] = f"⚠️ Lỗi phân tích: {error}"
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    if result_key not in st.session_state and st.button(
+                        "✨ Phân tích chuyên sâu cùng Gemini",
+                        key=f"btn_run_{result_key}",
+                    ):
+                        with st.spinner("🤖 Gemini đang rà soát dữ liệu & lập báo cáo..."):
+                            try:
+                                st.session_state[result_key] = analyze_shop_pnl_with_gemini(
+                                    shop_name=shop_name,
+                                    period=period,
+                                    gmv=float(gross_revenue) if gross_revenue else 0.0,
+                                    net_payout=float(wallet_revenue) if wallet_revenue else 0.0,
+                                    total_fees=float(r["Tổng Phí Sàn Đã Trừ"]) if r["Tổng Phí Sàn Đã Trừ"] else 0.0,
+                                    fee_details=str(r.get("Chi tiết phí", {})),
+                                    ads_cost=float(r["Chi phí Ads"]) if r["Chi phí Ads"] else 0.0,
+                                    cogs=float(r["Giá vốn"]) if r["Giá vốn"] else 0.0,
+                                    mam=float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) if r["Lợi Nhuận Gộp Sau Marketing (MAM)"] else 0.0,
+                                    mam_pct=(
+                                        float(r["Lợi Nhuận Gộp Sau Marketing (MAM)"]) / float(gross_revenue) * 100
+                                        if gross_revenue else 0.0
+                                    ),
+                                )
+                            except Exception as error:
+                                st.session_state[result_key] = f"⚠️ Lỗi phân tích: {error}"
 
                 if result_key in st.session_state:
                     with st.container():
                         st.markdown("### 🤖 Báo Cáo Phân Tích Chuyên Sâu (Gemini AI)")
                         st.markdown(st.session_state[result_key])
-                        if st.button("🔄 Phân tích lại", key=f"re_run_{result_key}"):
+                        if st.button("🔄 Phân tích lại", key=f"btn_retry_{result_key}"):
                             del st.session_state[result_key]
                             st.rerun()
             with chart_col:
